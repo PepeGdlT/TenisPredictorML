@@ -4,7 +4,7 @@ import pandas as pd
 
 
 def clean_data(df):
-    """Aplica limpieza básica al dataset."""
+    """aplica limpieza básica al dataset."""
     # elimina columnas poco informativas (ajústalo según tus necesidades)
     columns_to_drop = ['winner_entry', 'loser_entry']
     df = df.drop(columns=[col for col in columns_to_drop if col in df.columns], errors='ignore')
