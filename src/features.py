@@ -16,7 +16,29 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
-from collections import defaultdict
+from collections import defaultdict, deque
+
+
+# Función auxiliar para validación segura de NaN
+def safe_isnan(value):
+    """
+    Función segura para verificar si un valor es NaN
+    """
+    try:
+        return pd.isna(value) or (isinstance(value, (int, float)) and np.isnan(value))
+    except (TypeError, ValueError):
+        return False
+
+def safe_to_numeric(value, default=np.nan):
+    """
+    Convierte un valor a numérico de forma segura
+    """
+    if safe_isnan(value):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 PCA_GROUPS = {
@@ -67,7 +89,7 @@ PCA_GROUPS = {
     ],
 
     # ===============================
-    # Forma reciente, fatiga y ritmo
+    # Forma reciente, fatiga y ritmo MEJORADO
     # ===============================
     "recent_form": [
         "form_last5_diff","form_last10_diff",
@@ -76,13 +98,27 @@ PCA_GROUPS = {
     ],
 
     "fatigue": [
-        "matches_recent_weighted", "days_since_last_diff_scaled", "elo_matches_interaction"
+        "matches_recent_weighted", "days_since_last_diff_scaled", "elo_matches_interaction",
+        "fatigue_immediate", "fatigue_short_term", "recovery_factor", "elo_fatigue_immediate"
     ],
-    # Agrupamos también las raw + escaladas para que no dominen importancia individual
+    
+    # Agrupamos features raw de fatiga para reducir ruido
     "fatigue_raw": [
-        "matches_last7d_diff", "matches_last14d_diff", "days_since_last_diff",
-        "matches_last7d_diff_scaled", "matches_last14d_diff_scaled"  # añadidas
+        "matches_last3d_diff", "matches_last7d_diff", "matches_last14d_diff", "days_since_last_diff",
+        "matches_last3d_diff_scaled", "matches_last7d_diff_scaled", "matches_last14d_diff_scaled",
+        "days_since_surface_diff", "days_since_surface_diff_scaled", "surface_matches_30d_diff"
     ],
+    
+    # Features individuales por jugador (para reducir dimensionalidad)
+    "fatigue_individual": [
+        "p1_matches_last3d", "p2_matches_last3d",
+        "p1_matches_last7d", "p2_matches_last7d", 
+        "p1_matches_last14d", "p2_matches_last14d",
+        "p1_days_since_last", "p2_days_since_last",
+        "p1_days_since_surface", "p2_days_since_surface",
+        "p1_surface_matches_last30d", "p2_surface_matches_last30d"
+    ],
+    
     # ===============================
     # Contexto del partido
     # ===============================
@@ -412,13 +448,15 @@ def compute_historic_stats_with_ratios(df, initial_stats=None, min_matches=3):
         # actualizar stats con partido actual
         for prefix, player in zip(['p1_', 'p2_'], [row['player_1'], row['player_2']]):
             for stat in stat_cols:
-                value = row.get(f'{prefix}{stat}', np.nan)
-                if not np.isnan(value):
+                raw_value = row.get(f'{prefix}{stat}', np.nan)
+                value = safe_to_numeric(raw_value)
+                if not safe_isnan(value):
                     stats[player][stat].append(value)
             for stat in surface_stat_cols:
-                value = row.get(f'{prefix}{stat}', np.nan)
+                raw_value = row.get(f'{prefix}{stat}', np.nan)
+                value = safe_to_numeric(raw_value)
                 surface = row.get('surface', None)
-                if not np.isnan(value) and surface:
+                if not safe_isnan(value) and surface:
                     stats[player].setdefault(f'{stat}_surface', []).append((surface, value))
 
     # crear ratios p1/p2
@@ -457,6 +495,7 @@ def add_recent_form_and_fatigue(df):
     wins_surface_hist = defaultdict(list)  # (surface, outcome)
     last_date = defaultdict(lambda: None)  # fecha del último partido
     recent_dates = defaultdict(list)       # fechas de los últimos partidos (para 7/14d)
+    surface_matches = defaultdict(lambda: defaultdict(list))  # Por superficie
 
     # prealoc columnas
     cols = [
@@ -467,7 +506,11 @@ def add_recent_form_and_fatigue(df):
         'p1_streak_wins','p2_streak_wins',
         'p1_days_since_last','p2_days_since_last',
         'p1_matches_last7d','p2_matches_last7d',
-        'p1_matches_last14d','p2_matches_last14d'
+        'p1_matches_last14d','p2_matches_last14d',
+        # Nuevas features mejoradas
+        'p1_matches_last3d','p2_matches_last3d',
+        'p1_days_since_surface','p2_days_since_surface',
+        'p1_surface_matches_last30d','p2_surface_matches_last30d'
     ]
     for c in cols:
         df[c] = np.nan
@@ -502,27 +545,51 @@ def add_recent_form_and_fatigue(df):
         streak_p1 = _streak(wins_hist[p1])
         streak_p2 = _streak(wins_hist[p2])
 
-        # fatiga/ritmo si hay fechas
+        # fatiga/ritmo si hay fechas - MEJORADO
         if d is not None:
             ld1, ld2 = last_date[p1], last_date[p2]
             ds1 = (d - ld1).days if ld1 is not None else np.nan
             ds2 = (d - ld2).days if ld2 is not None else np.nan
 
-            # ventana 7/14 días: contar partidos previos en esas ventanas
+            # Días desde último partido en esta superficie específica
+            last_surface_dates_p1 = [fecha for fecha, surf in zip(recent_dates[p1],
+                                     [surf for fecha, surf in surface_matches[p1][surface]])
+                                     if surf == surface]
+            last_surface_dates_p2 = [fecha for fecha, surf in zip(recent_dates[p2],
+                                     [surf for fecha, surf in surface_matches[p2][surface]])
+                                     if surf == surface]
+            
+            ds_surface_p1 = (d - max(last_surface_dates_p1)).days if last_surface_dates_p1 else np.nan
+            ds_surface_p2 = (d - max(last_surface_dates_p2)).days if last_surface_dates_p2 else np.nan
+
+            # ventana de partidos con más granularidad
             def _count_recent(lst_dates, days):
                 if not lst_dates: return 0
                 threshold = d - pd.Timedelta(days=days)
                 return sum(1 for x in lst_dates if x is not None and x > threshold)
 
+            def _count_surface_recent(player, surf, days):
+                if surf not in surface_matches[player]: return 0
+                surf_dates = [fecha for fecha, s in surface_matches[player][surf] if s == surf]
+                threshold = d - pd.Timedelta(days=days)
+                return sum(1 for x in surf_dates if x is not None and x > threshold)
+
+            m3_p1 = _count_recent(recent_dates[p1], 3)
             m7_p1 = _count_recent(recent_dates[p1], 7)
             m14_p1 = _count_recent(recent_dates[p1], 14)
+            m3_p2 = _count_recent(recent_dates[p2], 3)
             m7_p2 = _count_recent(recent_dates[p2], 7)
             m14_p2 = _count_recent(recent_dates[p2], 14)
+            
+            # Partidos en superficie específica últimos 30 días
+            ms30_p1 = _count_surface_recent(p1, surface, 30)
+            ms30_p2 = _count_surface_recent(p2, surface, 30)
         else:
-            ds1 = ds2 = np.nan
-            m7_p1 = m14_p1 = m7_p2 = m14_p2 = np.nan
+            ds1 = ds2 = ds_surface_p1 = ds_surface_p2 = np.nan
+            m3_p1 = m7_p1 = m14_p1 = m3_p2 = m7_p2 = m14_p2 = np.nan
+            ms30_p1 = ms30_p2 = np.nan
 
-        # escribir
+        # escribir valores mejorados
         df.at[idx, 'p1_form_winrate_last5']  = wr5_p1
         df.at[idx, 'p2_form_winrate_last5']  = wr5_p2
         df.at[idx, 'p1_form_winrate_last10'] = wr10_p1
@@ -535,10 +602,16 @@ def add_recent_form_and_fatigue(df):
         df.at[idx, 'p2_streak_wins']         = streak_p2
         df.at[idx, 'p1_days_since_last']     = ds1
         df.at[idx, 'p2_days_since_last']     = ds2
+        df.at[idx, 'p1_matches_last3d']      = m3_p1
         df.at[idx, 'p1_matches_last7d']      = m7_p1
-        df.at[idx, 'p2_matches_last7d']      = m7_p2
         df.at[idx, 'p1_matches_last14d']     = m14_p1
+        df.at[idx, 'p2_matches_last3d']      = m3_p2
+        df.at[idx, 'p2_matches_last7d']      = m7_p2
         df.at[idx, 'p2_matches_last14d']     = m14_p2
+        df.at[idx, 'p1_days_since_surface']  = ds_surface_p1
+        df.at[idx, 'p2_days_since_surface']  = ds_surface_p2
+        df.at[idx, 'p1_surface_matches_last30d'] = ms30_p1
+        df.at[idx, 'p2_surface_matches_last30d'] = ms30_p2
 
         # actualizar historiales tras el partido
         outcome_p1 = row.get("target", 1)
@@ -547,35 +620,50 @@ def add_recent_form_and_fatigue(df):
         wins_hist[p2].append(outcome_p2)
         wins_surface_hist[p1].append((surface, outcome_p1))
         wins_surface_hist[p2].append((surface, outcome_p2))
+
         if d is not None:
             last_date[p1] = d; last_date[p2] = d
             recent_dates[p1].append(d); recent_dates[p2].append(d)
+            surface_matches[p1][surface].append((d, surface))
+            surface_matches[p2][surface].append((d, surface))
 
-    # diffs/ratios útiles (centrar en partido)
+    # diffs/ratios útiles (centrar en partido) - AMPLIADO
     df['form_last5_diff']  = df['p1_form_winrate_last5']  - df['p2_form_winrate_last5']
     df['form_last10_diff'] = df['p1_form_winrate_last10'] - df['p2_form_winrate_last10']
     df['surface_wr_all_diff']   = df['p1_surface_wr_all']   - df['p2_surface_wr_all']
     df['surface_wr_last5_diff'] = df['p1_surface_wr_last5'] - df['p2_surface_wr_last5']
     df['streak_wins_diff'] = df['p1_streak_wins'] - df['p2_streak_wins']
     df['days_since_last_diff'] = df['p1_days_since_last'] - df['p2_days_since_last']
+    df['matches_last3d_diff']  = df['p1_matches_last3d']  - df['p2_matches_last3d']
     df['matches_last7d_diff']  = df['p1_matches_last7d']  - df['p2_matches_last7d']
     df['matches_last14d_diff'] = df['p1_matches_last14d'] - df['p2_matches_last14d']
+    df['days_since_surface_diff'] = df['p1_days_since_surface'] - df['p2_days_since_surface']
+    df['surface_matches_30d_diff'] = df['p1_surface_matches_last30d'] - df['p2_surface_matches_last30d']
 
     # ===============================
-    # escalado y combinación ponderada
+    # escalado y combinación ponderada MEJORADO
     # ===============================
-    # Sustituye estos tres escalados:
+    df['matches_last3d_diff_scaled'] = df['matches_last3d_diff'].clip(-3, 3) / 3.0
     df['matches_last7d_diff_scaled'] = df['matches_last7d_diff'].clip(-5, 5) / 5.0
     df['matches_last14d_diff_scaled'] = df['matches_last14d_diff'].clip(-10, 10) / 10.0
     df['days_since_last_diff_scaled'] = df['days_since_last_diff'].clip(-30, 30) / 30.0
+    df['days_since_surface_diff_scaled'] = df['days_since_surface_diff'].clip(-60, 60) / 60.0
 
-    df['matches_recent_weighted'] = 0.6*df['matches_last7d_diff_scaled'] + 0.4*df['matches_last14d_diff_scaled']
+    # Combinación ponderada más sofisticada
+    df['fatigue_immediate'] = 0.5 * df['matches_last3d_diff_scaled'] + 0.3 * df['matches_last7d_diff_scaled']
+    df['fatigue_short_term'] = 0.6*df['matches_last7d_diff_scaled'] + 0.4*df['matches_last14d_diff_scaled']
+    df['recovery_factor'] = 0.7 * df['days_since_last_diff_scaled'] + 0.3 * df['days_since_surface_diff_scaled']
+
+    # Feature combinada final
+    df['matches_recent_weighted'] = 0.4*df['fatigue_immediate'] + 0.4*df['fatigue_short_term'] + 0.2*df['recovery_factor']
 
     # interacción con elo (suaviza la influencia de la fatiga)
     if 'elo_prob' in df.columns:
         df['elo_matches_interaction'] = df['elo_prob'] * df['matches_recent_weighted']
+        df['elo_fatigue_immediate'] = df['elo_prob'] * df['fatigue_immediate']
     else:
         df['elo_matches_interaction'] = df['matches_recent_weighted']
+        df['elo_fatigue_immediate'] = df['fatigue_immediate']
 
     return df
 
@@ -765,6 +853,7 @@ def randomize_player_order(df):
         if parsed.notna().mean() >= 0.95:
             return parsed
         return s
+
     candidate_cols = [c for c in df.columns if c.startswith(('p1_','p2_')) and not any(c.endswith(x) for x in ['name','hand'])]
     for c in candidate_cols:
         df[c] = _maybe_coerce_numeric(df[c])
@@ -782,38 +871,52 @@ def randomize_player_order(df):
     for suf in common:
         c1 = 'p1_' + suf
         c2 = 'p2_' + suf
-        # armonizar dtype de la pareja antes del swap
-        d1, d2 = df[c1].dtype, df[c2].dtype
-        if d1 != d2:
-            # intentar convertir ambos a numérico
-            c1_num = pd.to_numeric(df[c1], errors='coerce')
-            c2_num = pd.to_numeric(df[c2], errors='coerce')
-            if c1_num.notna().any() or c2_num.notna().any():
-                df[c1] = c1_num
-                df[c2] = c2_num
-            else:
-                # forzar ambos a object explícitamente
-                df[c1] = df[c1].astype('object')
-                df[c2] = df[c2].astype('object')
-        # asegurar mismo dtype tras intento
-        if df[c1].dtype != df[c2].dtype:
-            # escoger un dtype objetivo (object) y castear ambos
-            df[c1] = df[c1].astype('object')
-            df[c2] = df[c2].astype('object')
-        # swap seguro
-        tmp = df.loc[mask, c1].to_numpy(copy=True)
-        df.loc[mask, c1] = df.loc[mask, c2].to_numpy()
-        df.loc[mask, c2] = tmp
+        if c1 not in df.columns or c2 not in df.columns:
+            continue
 
+        # Convertir ambas columnas al mismo dtype compatible antes del swap
+        col1_data = df[c1].copy()
+        col2_data = df[c2].copy()
+
+        # Intentar conversión numérica primero
+        try:
+            col1_numeric = pd.to_numeric(col1_data, errors='coerce')
+            col2_numeric = pd.to_numeric(col2_data, errors='coerce')
+
+            # Si ambas son mayoritariamente numéricas, usar numeric
+            if (col1_numeric.notna().sum() >= len(col1_data) * 0.8 and
+                col2_numeric.notna().sum() >= len(col2_data) * 0.8):
+                df[c1] = col1_numeric
+                df[c2] = col2_numeric
+            else:
+                # Convertir a string para swap seguro
+                df[c1] = col1_data.astype('str')
+                df[c2] = col2_data.astype('str')
+        except Exception:
+            # Fallback: convertir a string
+            df[c1] = col1_data.astype('str')
+            df[c2] = col2_data.astype('str')
+
+        # Hacer el swap usando .values para evitar warnings
+        if mask.sum() > 0:
+            temp_values = df.loc[mask, c1].values.copy()
+            df.loc[mask, c1] = df.loc[mask, c2].values
+            df.loc[mask, c2] = temp_values
+
+    # swap especial para columnas principales
     if {'player_1','player_2'}.issubset(df.columns):
-        tmp = df.loc[mask, 'player_1'].to_numpy(copy=True)
-        df.loc[mask, 'player_1'] = df.loc[mask, 'player_2'].to_numpy()
-        df.loc[mask, 'player_2'] = tmp
+        if mask.sum() > 0:
+            temp_values = df.loc[mask, 'player_1'].values.copy()
+            df.loc[mask, 'player_1'] = df.loc[mask, 'player_2'].values
+            df.loc[mask, 'player_2'] = temp_values
+
     for pair in [('elo_p1','elo_p2'), ('surface_elo_p1','surface_elo_p2')]:
         if all(p in df.columns for p in pair):
-            tmp = df.loc[mask, pair[0]].to_numpy(copy=True)
-            df.loc[mask, pair[0]] = df.loc[mask, pair[1]].to_numpy()
-            df.loc[mask, pair[1]] = tmp
+            if mask.sum() > 0:
+                temp_values = df.loc[mask, pair[0]].values.copy()
+                df.loc[mask, pair[0]] = df.loc[mask, pair[1]].values
+                df.loc[mask, pair[1]] = temp_values
+
     if 'target' not in df.columns:
         df['target'] = 1
     df.loc[mask, 'target'] = 1 - df.loc[mask, 'target']
@@ -1127,3 +1230,4 @@ def diagnose_pca_group(df_original, group_name, pca_state):
         'variance_cumsum': st['variance_cumsum'][:st['n_components']],
         'pc1_loadings_sorted': pc1_sorted
     }
+

@@ -1,0 +1,35 @@
+{
+  "model_type": "XGBoost Optimizado",
+  "training_date": "2025-09-05 15:28:33",
+  "performance": {
+    "accuracy": 0.8089642640823743,
+    "auc": 0.9061850883631852,
+    "logloss": 0.3810212305572653,
+    "brier": 0.12480214476658977
+  },
+  "data_info": {
+    "train_samples": 188934,
+    "test_samples": 8255,
+    "total_features": 36,
+    "total_players": 7668
+  },
+  "best_hyperparameters": {
+    "colsample_bytree": 0.7,
+    "learning_rate": 0.05,
+    "max_depth": 8,
+    "n_estimators": 200,
+    "subsample": 0.9
+  },
+  "top_features": [
+    "fatigue_pca1",
+    "fatigue_raw_pca1",
+    "elo_core_pca1",
+    "ranking_pca1",
+    "fatigue_raw_pca3",
+    "ranking_pca2",
+    "elo_core_pca2",
+    "fatigue_raw_pca4",
+    "ranking_pca3",
+    "match_competitiveness"
+  ]
+}
