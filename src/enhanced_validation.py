@@ -1,6 +1,6 @@
 # src/enhanced_validation.py
 """
-Validación mejorada para detectar overfitting y problemas de generalización
+validación mejorada para detectar overfitting y problemas de generalización
 """
 import pandas as pd
 import numpy as np

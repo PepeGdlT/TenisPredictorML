@@ -21,7 +21,7 @@ from collections import defaultdict
 
 PCA_GROUPS = {
     # ===============================
-    # Stats históricas / rendimiento por jugador
+    # stats históricas / rendimiento por jugador
     # ===============================
     "ace_df": [
         "p1_ace_mean", "p2_ace_mean",
@@ -40,7 +40,7 @@ PCA_GROUPS = {
     ],
 
     # ===============================
-    # Elo y probabilidades
+    # elo y probabilidades
     # ===============================
     "elo_core": [
         "elo_prob","surface_elo_prob",
@@ -51,14 +51,14 @@ PCA_GROUPS = {
     ],
 
     # ===============================
-    # Ranking
+    # ranking
     # ===============================
     "ranking": [
         "rank_diff","rank_ratio","log_rank_ratio","elo_rank_mismatch"
     ],
 
     # ===============================
-    # H2H
+    # h2h
     # ===============================
     "h2h": [
         "h2h_count","h2h_balance",
@@ -67,7 +67,7 @@ PCA_GROUPS = {
     ],
 
     # ===============================
-    # Forma reciente, fatiga y ritmo
+    # forma reciente, fatiga y ritmo
     # ===============================
     "recent_form": [
         "form_last5_diff","form_last10_diff",
@@ -78,13 +78,13 @@ PCA_GROUPS = {
     "fatigue": [
         "matches_recent_weighted", "days_since_last_diff_scaled", "elo_matches_interaction"
     ],
-    # Agrupamos también las raw + escaladas para que no dominen importancia individual
+    # agrupamos también las raw + escaladas para que no dominen importancia individual
     "fatigue_raw": [
         "matches_last7d_diff", "matches_last14d_diff", "days_since_last_diff",
         "matches_last7d_diff_scaled", "matches_last14d_diff_scaled"  # añadidas
     ],
     # ===============================
-    # Contexto del partido
+    # contexto del partido
     # ===============================
     "match_context": [
         "match_competitiveness"
@@ -765,7 +765,7 @@ def randomize_player_order(df):
         if parsed.notna().mean() >= 0.95:
             return parsed
         return s
-    candidate_cols = [c for c in df.columns if c.startswith(('p1_','p2_')) and not any(c.endswith(x) for x in ['name','hand'])]
+    candidate_cols = [c for c in df.columns if c.startswith(('p1_','p2_')) and not any(c.endsWith(x) for x in ['name','hand'])]
     for c in candidate_cols:
         df[c] = _maybe_coerce_numeric(df[c])
     # ----------------------------------------------------------------
